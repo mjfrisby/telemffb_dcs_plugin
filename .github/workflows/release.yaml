@@ -68,22 +68,22 @@ jobs:
       - name: Build components.json
         shell: python
         env:
-          ASSETS_JSON:  ${{ toJson(steps.release.outputs.assets) }}
+          ASSETS_JSON:  ${{ steps.release.outputs.assets }}
           CHECKSUM:     ${{ steps.checksum.outputs.value }}
-          RELEASED_AT:  ${{ steps.release.outputs.created_at }}
         run: |
-          import json, os
+          import json, os, datetime
           assets = json.loads(os.environ['ASSETS_JSON'])
           download_url = next(
               a['browser_download_url'] for a in assets if a['name'] == 'telemffb.dll'
           )
+          released_at = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
           manifest = {
               "component":     "telemffb_dll",
               "filename":      "telemffb.dll",
               "download_url":  download_url,
               "checksum":      os.environ['CHECKSUM'],
               "checksum_type": "crc32",
-              "released_at":   os.environ['RELEASED_AT']
+              "released_at":   released_at
           }
           os.makedirs("_site", exist_ok=True)
           with open("_site/components.json", "w") as f:
