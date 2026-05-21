@@ -26,7 +26,7 @@ name: Publish Component Manifest
 on:
   push:
     tags:
-      - 'v*'          # fires when a v* tag is pushed (including via web UI release)
+      - '[0-9]*'     # fires on YYMMDD-style tags e.g. 260521
   workflow_dispatch:  # allows manual trigger from the Actions tab for testing
 
 jobs:
