@@ -1,0 +1,139 @@
+# GitHub Actions workflow for mjfrisby/telemffb_dcs_plugin
+#
+# Place this file at:  .github/workflows/release.yaml
+#
+# What this workflow does:
+#   1. Triggers when you push a version tag (e.g. v1.2.3)
+#   2. Creates a GitHub Release and attaches telemffb.dll to it
+#   3. Generates a components.json manifest with the download URL,
+#      CRC32 checksum, and the official release timestamp
+#   4. Publishes components.json to GitHub Pages so TelemFFB can fetch it
+#
+# One-time setup required in the repository:
+#   Settings -> Pages -> Source = "GitHub Actions"   (not a branch)
+#
+# How to trigger a release:
+#   git tag v1.2.3
+#   git push origin v1.2.3
+#
+# The published manifest will be available at:
+#   https://mjfrisby.github.io/telemffb_dcs_plugin/components.json
+
+name: Release DCS Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'       # matches v1.0.0, v2.3.1, etc.
+
+jobs:
+  release:
+    runs-on: windows-latest   # DLL is a Windows binary
+
+    permissions:
+      contents: write    # needed to create the GitHub Release
+      pages: write       # needed to deploy to GitHub Pages
+      id-token: write    # needed by the deploy-pages action (OIDC auth)
+
+    steps:
+      # ── 1. Check out the repository ────────────────────────────────────────
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # ── 2. (Optional) Build the DLL ────────────────────────────────────────
+      # If your DLL is pre-built and committed to the repo, delete this section.
+      # If it needs to be compiled, add your build steps here.  After this block,
+      # telemffb.dll must exist at the root of the workspace.
+      #
+      # Example for a CMake/MSVC build:
+      #
+      # - name: Configure
+      #   run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      #
+      # - name: Build
+      #   run: cmake --build build --config Release
+      #
+      # - name: Stage artifact
+      #   run: Copy-Item build\Release\telemffb.dll telemffb.dll
+
+      # ── 3. Compute CRC32 checksum ──────────────────────────────────────────
+      # TelemFFB uses a CRC32 (hex) checksum to verify the downloaded file.
+      - name: Compute CRC32 checksum
+        id: checksum
+        shell: python
+        run: |
+          import zlib, os
+          data = open('telemffb.dll', 'rb').read()
+          checksum = f'{zlib.crc32(data):08x}'
+          print(f'CRC32: {checksum}')
+          # Write to the special GitHub Actions output file so later steps can read it
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'value={checksum}\n')
+
+      # ── 4. Create GitHub Release and upload telemffb.dll ───────────────────
+      # softprops/action-gh-release is the standard community action for this.
+      # It creates the release from the tag and uploads the file as an asset.
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: telemffb.dll
+          name: "DCS Plugin ${{ github.ref_name }}"
+          body: |
+            TelemFFB DCS Export Plugin ${{ github.ref_name }}
+
+            Install automatically via TelemFFB, or download and place
+            telemffb.dll in your DCS Saved Games Scripts folder manually.
+
+      # ── 5. Build components.json ────────────────────────────────────────────
+      # This is the manifest file TelemFFB fetches to check for updates.
+      # released_at comes from the GitHub API so it reflects the actual
+      # release creation time, not the time the workflow ran.
+      - name: Build components.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site
+
+          # Get the official release timestamp from the GitHub API
+          RELEASED_AT=$(gh api \
+            repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} \
+            --jq '.created_at')
+
+          # Extract the browser download URL for telemffb.dll from the release assets
+          DOWNLOAD_URL=$(echo '${{ toJson(steps.release.outputs.assets) }}' | \
+            python3 -c "
+          import json, sys
+          assets = json.load(sys.stdin)
+          url = next(a['browser_download_url'] for a in assets if a['name'] == 'telemffb.dll')
+          print(url)
+          ")
+
+          # Write the manifest
+          python3 - <<EOF
+          import json
+          manifest = {
+              "component":     "telemffb_dll",
+              "filename":      "telemffb.dll",
+              "download_url":  "${DOWNLOAD_URL}",
+              "checksum":      "${{ steps.checksum.outputs.value }}",
+              "checksum_type": "crc32",
+              "released_at":   "${RELEASED_AT}"
+          }
+          with open("_site/components.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+      # ── 6. Publish components.json to GitHub Pages ─────────────────────────
+      # These two steps package the _site/ folder and deploy it.
+      # GitHub Pages must be enabled with Source = "GitHub Actions" first.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
